@@ -1,0 +1,38 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, openbao-lab]
+    environment: production   # 승인 대기 + main만
+    permissions:
+      contents: read
+      id-token: write         # GitHub 신분증(OIDC) 발급 허용
+    env:
+      BAO_ADDR: https://bao.localhost:8200
+    steps:
+      - name: OpenBao에서 prod 값 읽기 (값은 출력하지 않음)
+        run: |
+          set -euo pipefail
+          # ① GitHub 신분증 (audience=openbao)
+          JWT=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=openbao" | jq -r .value)
+          echo "::add-mask::$JWT"
+          # ② 역할 카드로 로그인 → 10분 토큰 (JWT는 stdin으로)
+          T=$(printf '%s' "$JWT" | bao write -field=token auth/github/login role=client-a-api-prod jwt=-)
+          [ -n "$T" ] || { echo "로그인 실패"; exit 1; }
+          echo "::add-mask::$T"
+          export BAO_TOKEN="$T"
+          bao token lookup -format=json | jq -r '"토큰: \(.data.display_name), 남은 \(.data.ttl)초, 정책 \(.data.policies)"'
+          # ③ prod 값 읽기 → 키 이름과 글자 수만
+          bao kv get -mount=client-a/kv -format=json api/prod \
+            | jq -r '.data.data | to_entries[] | "\(.key): \(.value | length)자"'
+          # ④ 다 썼으면 바로 폐기
+          bao token revoke -self
