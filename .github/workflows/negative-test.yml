@@ -1,0 +1,35 @@
+name: negative-test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  no-environment:
+    runs-on: [self-hosted, openbao-lab]   # environment 없음 = 승인 안 거침
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      BAO_ADDR: https://bao.localhost:8200
+    steps:
+      - name: 거부 시험 (로그인이 되면 실패)
+        run: |
+          set -uo pipefail
+          try() {  # $1=설명 $2=audience
+            JWT=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$2" | jq -r .value)
+            echo "::add-mask::$JWT"
+            if T=$(printf '%s' "$JWT" | bao write -field=token auth/github/login role=client-a-api-prod jwt=- 2>err.txt); then
+              echo "::add-mask::$T"; BAO_TOKEN="$T" bao token revoke -self >/dev/null
+              echo "FAIL $1: 통과됨 (막혀야 함)"; return 1
+            fi
+            echo "OK $1: 거부됨 → $(grep -o 'error.*' err.txt | head -1)"
+          }
+          rc=0
+          try "A 환경 없이" openbao || rc=1
+          try "B 다른 audience" sts.amazonaws.com || rc=1
+          rm -f err.txt
+          exit $rc
